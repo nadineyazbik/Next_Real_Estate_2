@@ -6,7 +6,7 @@ const ADMIN_TOKEN_KEY = 'next_re_admin_jwt';
 export const apiService = {
   // Retrieve or refresh CSRF Token
   async getCsrfToken(): Promise<string> {
-    if (cachedCsrfToken) return cachedCsrfToken;
+    cachedCsrfToken = null;
     try {
       const res = await fetch('/api/csrf-token');
       if (res.ok) {

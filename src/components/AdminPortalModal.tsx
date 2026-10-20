@@ -81,6 +81,13 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   const [activeTab, setActiveTab] = useState<'listings' | 'new_listing' | 'submissions'>('listings');
   const [listingsFilter, setListingsFilter] = useState<'active' | 'archived' | 'all'>('active');
   const [broadcastSuccess, setBroadcastSuccess] = useState<string | null>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [adminError, setAdminError] = useState<string | null>(null);
+
+  const flashError = (msg: string) => {
+    setAdminError(msg);
+    setTimeout(() => setAdminError(null), 4000);
+  };
 
   // Submissions State
   const [submissions, setSubmissions] = useState<any[]>([]);
@@ -129,11 +136,9 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
 
   const handleRejectSubmission = async (id: string) => {
     setSubmissionActionMsg(null);
-    const reason = window.prompt(
-      isArabic ? 'سبب الرفض (اختياري):' : 'Rejection reason (optional):',
-      isArabic ? 'العقار غير مستوفٍ للشروط أو مكرر' : 'Does not meet current listing standards'
-    );
-    if (reason === null) return;
+    const reason = isArabic
+      ? 'العقار غير مستوفٍ للشروط أو مكرر'
+      : 'Does not meet current listing standards';
     const res = await apiService.rejectSubmission(id, reason);
     if (res.success) {
       setSubmissionActionMsg(isArabic ? 'تم رفض طلب الإدراج.' : 'Submission marked as rejected.');
@@ -145,14 +150,6 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   };
 
   const handleDeleteSubmission = async (id: string) => {
-    if (
-      !window.confirm(
-        isArabic
-          ? 'هل أنت متأكد من حذف هذا الطلب نهائياً؟'
-          : 'Are you sure you want to permanently delete this submission?'
-      )
-    )
-      return;
     const res = await apiService.deleteSubmission(id);
     if (res.success) {
       fetchSubmissions();
@@ -292,20 +289,19 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
   };
 
   const handleDeleteListing = async (propId: string) => {
-    if (
-      confirm(
-        isArabic
-          ? 'هل أنت متأكد من حذف هذا العقار نهائياً؟'
-          : 'Are you sure you want to permanently delete this listing?'
-      )
-    ) {
-      await apiService.deleteProperty(propId);
-      onDeleteProperty(propId);
-      setBroadcastSuccess(
-        isArabic ? 'تم حذف العقار نهائياً بنجاح.' : 'Property deleted permanently.'
-      );
-      setTimeout(() => setBroadcastSuccess(null), 2500);
+    try {
+      const res: any = await apiService.deleteProperty(propId);
+      if (res && res.success === false) {
+        flashError(res.error || (isArabic ? 'فشل الحذف من السيرفر' : 'Server refused the delete'));
+        return;
+      }
+    } catch {
+      flashError(isArabic ? 'خطأ بالاتصال بالسيرفر' : 'Network error');
+      return;
     }
+    onDeleteProperty(propId);
+    setBroadcastSuccess(isArabic ? 'تم حذف العقار نهائياً بنجاح.' : 'Property deleted permanently.');
+    setTimeout(() => setBroadcastSuccess(null), 2500);
   };
 
   const handleAutoArchiveOld = () => {
@@ -428,27 +424,27 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-3 sm:p-4 overflow-y-auto animate-in fade-in"
+      className="fixed inset-0 z-50 flex bg-black/75 backdrop-blur-sm p-0 sm:p-4 overflow-y-auto animate-in fade-in"
       dir={isArabic ? 'rtl' : 'ltr'}
     >
-      <div className="bg-white rounded-2xl max-w-3xl w-full overflow-hidden shadow-2xl border border-gray-100 my-6">
+      <div className="bg-white sm:rounded-2xl max-w-3xl w-full m-auto overflow-hidden shadow-2xl border border-gray-100">
         {/* Top Header */}
-        <div className="bg-[#18191a] text-white px-5 py-4 flex items-center justify-between border-b border-white/10">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-[#c4191a] flex items-center justify-center text-white">
+        <div className="bg-[#18191a] text-white px-4 sm:px-5 py-4 flex items-start justify-between gap-3 border-b border-white/10">
+          <div className="flex items-start gap-2.5 min-w-0">
+            <div className="w-8 h-8 shrink-0 rounded-lg bg-[#c4191a] flex items-center justify-center text-white">
               <Building className="w-4 h-4" />
             </div>
-            <div>
+            <div className="min-w-0">
               <h3
-                className="text-sm sm:text-base font-bold text-white flex items-center gap-2"
+                className="text-sm sm:text-base font-bold text-white flex flex-wrap items-center gap-x-2 gap-y-1 leading-snug"
                 style={{ fontFamily: isArabic ? "'Cairo', sans-serif" : "'Prompt', sans-serif" }}
               >
                 <span>{isArabic ? 'لوحة تحكم إدارة Next Real Estate' : 'Next Real Estate CMS & Admin Portal'}</span>
-                <span className="text-[10px] bg-red-900/60 text-red-200 border border-red-700/50 px-2 py-0.5 rounded-full font-mono">
+                <span className="text-[10px] bg-red-900/60 text-red-200 border border-red-700/50 px-2 py-0.5 rounded-full font-mono whitespace-nowrap">
                   STAFF ONLY
                 </span>
               </h3>
-              <p className="text-[11px] text-white/60">
+              <p className="text-[11px] text-white/60 leading-snug mt-1">
                 {isArabic
                   ? 'إدارة ونشر العقارات اليومية • أرشفة العقارات القديمة • إشعارات PWA'
                   : 'Daily property catalog management • Archive workflow • PWA push alerts'}
@@ -456,7 +452,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             {isAdminAuthenticated && (
               <button
                 type="button"
@@ -482,6 +478,12 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
           <div className="bg-emerald-50 border-b border-emerald-200 px-4 py-2.5 flex items-center gap-2 text-emerald-800 text-xs font-semibold animate-in fade-in">
             <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
             <span>{broadcastSuccess}</span>
+          </div>
+        )}
+
+        {adminError && (
+          <div className="bg-red-50 border-b border-red-200 px-4 py-2.5 text-red-700 text-xs font-semibold">
+            {adminError}
           </div>
         )}
 
@@ -579,11 +581,11 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
           <div className="p-4 sm:p-6">
             {/* Top Navigation Tabs */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 pb-3 mb-4">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
                   onClick={() => setActiveTab('listings')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+                  className={`whitespace-nowrap px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 ${
                     activeTab === 'listings'
                       ? 'bg-[#c4191a] text-white shadow-xs'
                       : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
@@ -600,7 +602,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setActiveTab('new_listing')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition cursor-pointer ${
+                  className={`whitespace-nowrap px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition cursor-pointer ${
                     activeTab === 'new_listing'
                       ? 'bg-[#c4191a] text-white shadow-xs'
                       : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
@@ -616,7 +618,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                     setActiveTab('submissions');
                     fetchSubmissions();
                   }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition cursor-pointer relative ${
+                  className={`whitespace-nowrap px-3 py-1.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1.5 transition cursor-pointer relative ${
                     activeTab === 'submissions'
                       ? 'bg-[#c4191a] text-white shadow-xs'
                       : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
@@ -636,7 +638,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                 <button
                   type="button"
                   onClick={handleAutoArchiveOld}
-                  className="px-2.5 py-1 text-[11px] rounded-lg border border-gray-200 hover:bg-gray-100 text-gray-600 flex items-center gap-1 cursor-pointer transition"
+                  className="whitespace-nowrap px-2.5 py-1 text-[11px] rounded-lg border border-gray-200 hover:bg-gray-100 text-gray-600 flex items-center gap-1 cursor-pointer transition"
                   title="Auto-archive older properties"
                 >
                   <Clock className="w-3 h-3 text-amber-600" />
@@ -695,7 +697,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                 </div>
 
                 {/* Listings Items */}
-                <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
+                <div className="space-y-2.5 sm:max-h-[420px] sm:overflow-y-auto sm:pr-1">
                   {displayProperties.length === 0 ? (
                     <div className="py-12 text-center text-gray-400 text-xs">
                       {isArabic
@@ -720,7 +722,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                           />
                           <div className="min-w-0">
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-xs font-bold text-gray-900 truncate">
+                              <span className="text-xs font-bold text-gray-900 line-clamp-2 break-words">
                                 {isArabic ? prop.titleAr : prop.title}
                               </span>
                               {prop.isArchived ? (
@@ -742,7 +744,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                               </span>
                             </div>
 
-                            <div className="text-[11px] text-gray-500 truncate mt-0.5">
+                            <div className="text-[11px] text-gray-500 break-words mt-0.5">
                               {prop.type} • {prop.location} •{' '}
                               <strong className="text-[#c4191a]">
                                 USD {new Intl.NumberFormat('en-US').format(prop.price)}
@@ -809,11 +811,32 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
                           {/* Delete Listing */}
                           <button
                             type="button"
-                            onClick={() => handleDeleteListing(prop.id)}
-                            className="p-1.5 rounded-lg hover:bg-red-50 text-gray-400 hover:text-red-600 transition cursor-pointer"
+                            onClick={() => {
+                              if (pendingDeleteId === prop.id) {
+                                setPendingDeleteId(null);
+                                handleDeleteListing(prop.id);
+                              } else {
+                                setPendingDeleteId(prop.id);
+                                setTimeout(
+                                  () => setPendingDeleteId((c) => (c === prop.id ? null : c)),
+                                  4000
+                                );
+                              }
+                            }}
+                            className={`p-1.5 rounded-lg transition cursor-pointer ${
+                              pendingDeleteId === prop.id
+                                ? 'bg-red-600 text-white px-2'
+                                : 'hover:bg-red-50 text-gray-400 hover:text-red-600'
+                            }`}
                             title={isArabic ? 'حذف نهائي' : 'Delete'}
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            {pendingDeleteId === prop.id ? (
+                              <span className="text-[10px] font-bold whitespace-nowrap">
+                                {isArabic ? 'تأكيد؟' : 'Sure?'}
+                              </span>
+                            ) : (
+                              <Trash2 className="w-3.5 h-3.5" />
+                            )}
                           </button>
                         </div>
                       </div>
@@ -827,7 +850,7 @@ export const AdminPortalModal: React.FC<AdminPortalModalProps> = ({
             {activeTab === 'new_listing' && (
               <form
                 onSubmit={handlePublishProperty}
-                className="space-y-3.5 max-h-[440px] overflow-y-auto pr-1 text-xs"
+                className="space-y-3.5 sm:max-h-[440px] sm:overflow-y-auto sm:pr-1 text-xs"
               >
                 {/* Title (En & Ar) */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

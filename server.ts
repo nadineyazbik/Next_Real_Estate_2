@@ -4,9 +4,15 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, Type } from '@google/genai';
+import dotenv from 'dotenv';
+import dotenv from 'dotenv';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: [path.join(__dirname, '.env.local'), path.join(__dirname, '.env')] });
+
+dotenv.config({ path: [path.join(__dirname, '.env.local'), path.join(__dirname, '.env')] });
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
@@ -606,10 +612,13 @@ function updateCaches() {
   propertyETag = `W/"${Date.now()}-${propertyMap.size}"`;
 }
 
+const DELETED_FILE = path.join(__dirname, 'custom-deleted-ids.json');
+const deletedIds = new Set<string>();
+
 function persistStore() {
   try {
-    const customProps = propertyListCache.filter((p) => p.id.startsWith('custom-'));
-    fs.writeFileSync(DATA_FILE, JSON.stringify(customProps, null, 2), 'utf-8');
+    fs.writeFileSync(DATA_FILE, JSON.stringify(propertyListCache, null, 2), 'utf-8');
+    fs.writeFileSync(DELETED_FILE, JSON.stringify([...deletedIds], null, 2), 'utf-8');
   } catch (err) {
     console.error('Failed to persist properties to disk', err);
   }
@@ -648,6 +657,18 @@ function loadInitialProperties() {
   } catch (err) {
     console.warn('Could not load custom properties file', err);
   }
+
+  try {
+    if (fs.existsSync(DELETED_FILE)) {
+      const ids = JSON.parse(fs.readFileSync(DELETED_FILE, 'utf-8'));
+      if (Array.isArray(ids)) {
+        for (const id of ids) {
+          deletedIds.add(id);
+          propertyMap.delete(id);
+        }
+      }
+    }
+  } catch {}
 
   updateCaches();
 }
@@ -908,9 +929,23 @@ app.post('/api/submissions', submissionRateLimiter, (req: Request, res: Response
 // ============================================================================
 
 // Data Source Limit: Real-time actual listings strictly from database (No Inventions)
-app.get('/api/agent/properties', apiRateLimiter, (_req: Request, res: Response) => {
+app.get('/api/agent/properties', apiRateLimiter, (req: Request, res: Response) => {
+  const qLocation = String(req.query.location || '').toLowerCase().trim();
+  const qType = String(req.query.property_type || req.query.propertyType || '').toLowerCase().trim();
+  const qMaxPrice = Number(req.query.max_price || req.query.maxPrice || 0);
+  const hasFilter = Boolean(qLocation || qType || qMaxPrice > 0);
   const activeListings = Array.from(propertyMap.values())
     .filter((p) => !p.isArchived)
+    .filter((p) => {
+      if (qLocation) {
+        const place = `${p.location} ${p.locationAr} ${p.district} ${p.districtAr} ${p.neighborhood} ${p.neighborhoodAr}`.toLowerCase();
+        if (!place.includes(qLocation)) return false;
+      }
+      if (qType && !`${p.type} ${p.typeAr}`.toLowerCase().includes(qType)) return false;
+      if (qMaxPrice > 0 && Number(p.price) > qMaxPrice) return false;
+      return true;
+    })
+    .slice(0, hasFilter ? 8 : 30)
     .map((p) => ({
       id: p.id,
       referenceNo: p.referenceNo,
@@ -980,12 +1015,15 @@ function handleBookingRequest(req: Request, res: Response) {
     notes,
   } = req.body || {};
 
-  const clientName = (rawClientName || customerName || name || 'عميل Next Real Estate').trim();
-  const clientPhone = (rawClientPhone || phone || phoneNumber || '+961 76 743 414').trim();
-  const viewDate = (appointmentDate || preferredDate || date || 'في أقرب موعد متاح').trim();
-  const viewTime = (appointmentTime || preferredTime || time || 'تنسيق هاتفي').trim();
-  const propInfo = (propertyTitle || propertyId || 'عقارات Next Real Estate').trim();
-  const refCode = (referenceNo || propertyRef || 'NXT-REF').trim();
+  const body: any = req.body || {};
+  const isoDate = String(body.appointment_date || '');
+  const isoParts = isoDate.includes('T') ? isoDate.split('T') : [isoDate, ''];
+  const clientName = (rawClientName || customerName || name || body.client_name || 'عميل Next Real Estate').trim();
+  const clientPhone = (rawClientPhone || phone || phoneNumber || body.client_phone || '+961 76 743 414').trim();
+  const viewDate = (appointmentDate || preferredDate || date || isoParts[0] || 'في أقرب موعد متاح').trim();
+  const viewTime = (appointmentTime || preferredTime || time || isoParts[1] || 'تنسيق هاتفي').trim();
+  const propInfo = (propertyTitle || propertyId || body.property_id || 'عقارات Next Real Estate').trim();
+  const refCode = (referenceNo || propertyRef || body.property_id || 'NXT-REF').trim();
   const additionalNotes = (notes || 'طلب حجز معاينة عبر منصة Next Real Estate والمستشار الذكي محمد AI').trim();
 
   // Create persistent booking record
@@ -1257,10 +1295,13 @@ const handleElevenLabsTTS = async (req: Request, res: Response) => {
       },
       body: JSON.stringify({
         text,
-        model_id: 'eleven_multilingual_v2', // Multilingual model with Arabic support
+        model_id: 'eleven_flash_v2_5',
         voice_settings: {
           stability: 0.5,
           similarity_boost: 0.8,
+          style: 0,
+          use_speaker_boost: true,
+          speed: 1.0,
         },
       }),
     });
@@ -1589,8 +1630,17 @@ app.delete(
     }
 
     propertyMap.delete(id);
+    deletedIds.add(id);
     updateCaches();
     persistStore();
+
+    recordAuditLog({
+      actor: (req as any).adminUser || 'admin',
+      action: 'delete_property',
+      targetId: id,
+      details: `Deleted property ${id}`,
+      ip: req.ip || 'admin',
+    });
 
     res.json({
       success: true,
@@ -1796,6 +1846,7 @@ app.get('/api/health', (_req: Request, res: Response) => {
     concurrencyReady: true,
     totalProperties: propertyMap.size,
     activeSessions: adminSessions.size,
+    voiceConfigured: Boolean(process.env.ELEVENLABS_API_KEY && process.env.ELEVENLABS_VOICE_ID),
   });
 });
 

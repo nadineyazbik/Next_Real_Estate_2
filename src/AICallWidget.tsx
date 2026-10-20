@@ -9,6 +9,8 @@ import {
   Volume2,
   VolumeX,
   Square,
+  Pause,
+  Play,
   Filter,
   AlertCircle,
   Send,
@@ -53,7 +55,7 @@ const MOHAMMAD_FALLBACK_AVATAR = '/assets/mohammad-avatar.jpg';
 const LEBANESE_GREETING_AR =
   'أهلاً! أنا محمد من Next Real Estate. فيك تحكي معي بالعربي أو بالإنكليزي، أو تكتب هون، وأنا بفلتر العقارات عالشاشة.';
 const LEBANESE_GREETING_EN =
-  'Hello! I am Mohammad from Next Real Estate. You can talk to me in Arabic or English, or type here, and I will filter properties on screen.';
+  'أهلاً وسهلاً! أنا محمد من Next Real Estate. فيك تحكي معي أو تكتب هون، وأنا بفلترلك العقارات عالشاشة.\nHello! I am Mohammad from Next Real Estate. You can talk or type in Arabic or English.';
 
 // Agent ID read strictly from public environment variable VITE_ELEVENLABS_AGENT_ID
 const AGENT_ID = (import.meta.env.VITE_ELEVENLABS_AGENT_ID as string) || '';
@@ -86,6 +88,7 @@ const AICallWidgetInner: React.FC<AICallWidgetProps> = ({
   const [loadingTtsMessageId, setLoadingTtsMessageId] = useState<string | null>(null);
   const [playingTtsMessageId, setPlayingTtsMessageId] = useState<string | null>(null);
   const [ttsError, setTtsError] = useState<string | null>(null);
+  const [pausedTtsMessageId, setPausedTtsMessageId] = useState<string | null>(null);
 
   // WhatsApp appointment booking link if triggered
   const [whatsappDispatchUrl, setWhatsappDispatchUrl] = useState<string | null>(null);
@@ -105,6 +108,15 @@ const AICallWidgetInner: React.FC<AICallWidgetProps> = ({
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
   const pendingTypedMessageRef = useRef<string | null>(null);
   const callStreamRef = useRef<MediaStream | null>(null);
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.getVoices();
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.getVoices();
+      };
+    }
+  }, []);
+const ttsCacheRef = useRef<Record<string, string>>({});
 
   // Dictation refs
   const recognitionRef = useRef<any>(null);
@@ -126,7 +138,13 @@ const AICallWidgetInner: React.FC<AICallWidgetProps> = ({
     filter_properties: async (parameters: any) => {
       try {
         console.log('[ElevenLabs Tool] filter_properties:', parameters);
-        onFilterProperties(parameters);
+        onFilterProperties({
+          ...parameters,
+          propertyType: parameters?.propertyType || parameters?.property_type,
+          budget:
+            parameters?.budget ||
+            (parameters?.max_price ? String(parameters.max_price) : undefined),
+        });
         if (parameters?.propertyId && onViewProperty) {
           onViewProperty(parameters.propertyId);
         }
@@ -225,7 +243,7 @@ const AICallWidgetInner: React.FC<AICallWidgetProps> = ({
     },
     onMessage: (payload: any) => {
       console.log('[ElevenLabs] Message received:', payload);
-      const text = payload?.message;
+      const text = String(payload?.message || '').replace(/\[[^\]]*\]/g, '').replace(/[ \t]{2,}/g, ' ').trim();
       if (!text || !text.trim()) return;
 
       const isUser = payload?.role === 'user' || payload?.source === 'user';
@@ -297,6 +315,7 @@ const AICallWidgetInner: React.FC<AICallWidgetProps> = ({
     }
 
     if (!AGENT_ID) {
+      console.error('VITE_ELEVENLABS_AGENT_ID is missing in .env.local');
       setErrorMessage(
         isArabic
           ? 'خدمة الصوت غير متوفرة حالياً'
@@ -595,17 +614,43 @@ const AICallWidgetInner: React.FC<AICallWidgetProps> = ({
   };
 
   // Play TTS (Read Aloud) via server-side ElevenLabs /api/tts endpoint
-  const handlePlayTTS = async (messageId: string, text: string) => {
-    // If clicking on currently playing message, stop it immediately
-    if (playingTtsMessageId === messageId) {
-      if (activeAudioRef.current) {
-        activeAudioRef.current.pause();
-        activeAudioRef.current = null;
+  const handleStopTTS = () => {
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    if (activeAudioRef.current) {
+      activeAudioRef.current.pause();
+      activeAudioRef.current = null;
+    }
+    setPlayingTtsMessageId(null);
+    setPausedTtsMessageId(null);
+    setLoadingTtsMessageId(null);
+  };
+
+  const handlePauseResumeTTS = () => {
+    if (typeof window !== 'undefined' && window.speechSynthesis && window.speechSynthesis.speaking) {
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+        setPausedTtsMessageId(null);
+      } else {
+        window.speechSynthesis.pause();
+        setPausedTtsMessageId(playingTtsMessageId);
       }
-      setPlayingTtsMessageId(null);
-      setLoadingTtsMessageId(null);
       return;
     }
+    const audio = activeAudioRef.current;
+    if (!audio) return;
+    if (audio.paused) {
+      audio.play();
+      setPausedTtsMessageId(null);
+    } else {
+      audio.pause();
+      setPausedTtsMessageId(playingTtsMessageId);
+    }
+  };
+
+  const handlePlayTTS = async (messageId: string, text: string) => {
+    setPausedTtsMessageId(null);
 
     try {
       if (activeAudioRef.current) {
@@ -617,21 +662,27 @@ const AICallWidgetInner: React.FC<AICallWidgetProps> = ({
       setLoadingTtsMessageId(messageId);
       setPlayingTtsMessageId(null);
 
-      const res = await fetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
+      const cacheKey = `${messageId}:${text}`;
+      let audioSrc = ttsCacheRef.current[cacheKey];
 
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'TTS generation failed');
+      if (!audioSrc) {
+        const res = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || 'TTS generation failed');
+        }
+
+        const data = await res.json();
+        if (!data.audio) throw new Error('No audio returned');
+
+        audioSrc = `data:${data.mimeType || 'audio/mpeg'};base64,${data.audio}`;
+        ttsCacheRef.current[cacheKey] = audioSrc;
       }
-
-      const data = await res.json();
-      if (!data.audio) throw new Error('No audio returned');
-
-      const audioSrc = `data:${data.mimeType || 'audio/mpeg'};base64,${data.audio}`;
       const audio = new Audio(audioSrc);
       activeAudioRef.current = audio;
 
@@ -653,24 +704,8 @@ const AICallWidgetInner: React.FC<AICallWidgetProps> = ({
       setLoadingTtsMessageId(null);
       setPlayingTtsMessageId(messageId);
     } catch (err: any) {
-      console.warn('ElevenLabs TTS failed, falling back to Web Speech API:', err.message);
+      console.warn('ElevenLabs TTS failed:', err.message);
       setLoadingTtsMessageId(null);
-
-      // Clean browser speech synthesis fallback
-      if ('speechSynthesis' in window) {
-        try {
-          window.speechSynthesis.cancel();
-          const utterance = new SpeechSynthesisUtterance(text);
-          utterance.lang = 'ar-LB';
-          utterance.rate = 0.95;
-          utterance.onend = () => setPlayingTtsMessageId(null);
-          utterance.onerror = () => setPlayingTtsMessageId(null);
-          window.speechSynthesis.speak(utterance);
-          setPlayingTtsMessageId(messageId);
-          return;
-        } catch {}
-      }
-
       setPlayingTtsMessageId(null);
       setTtsError(
         isArabic
@@ -678,6 +713,86 @@ const AICallWidgetInner: React.FC<AICallWidgetProps> = ({
           : 'Voice service is temporarily unavailable'
       );
     }
+  };
+
+  // Free browser voice (no ElevenLabs credits)
+  const pickArabicVoice = (): SpeechSynthesisVoice | null => {
+    const voices = window.speechSynthesis.getVoices();
+    const arabic = voices.filter((v) => v.lang.toLowerCase().startsWith('ar'));
+    if (arabic.length === 0) return null;
+    const score = (v: SpeechSynthesisVoice) => {
+      let s = 0;
+      const n = v.name.toLowerCase();
+      if (v.lang.toLowerCase().replace('_', '-') === 'ar-lb') s += 4;
+      if (n.includes('natural') || n.includes('online')) s += 3;
+      if (n.includes('google')) s += 2;
+      if (!v.localService) s += 1;
+      return s;
+    };
+    return [...arabic].sort((a, b) => score(b) - score(a))[0];
+  };
+
+  const handleBrowserTTS = (messageId: string, text: string) => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) {
+      setTtsError(
+        isArabic
+          ? 'المتصفح لا يدعم القراءة الصوتية.'
+          : 'Your browser does not support text-to-speech.'
+      );
+      return;
+    }
+    window.speechSynthesis.cancel();
+    setTtsError(null);
+    setPausedTtsMessageId(null);
+
+    const clean = text.replace(/\[[^\]]*\]/g, '').replace(/\s+/g, ' ').trim();
+    if (!clean) return;
+
+    const chunks =
+      clean.match(/[\u0600-\u06FF\u0750-\u077F][^A-Za-z]*|[A-Za-z][^\u0600-\u06FF\u0750-\u077F]*/g) || [clean];
+    const allVoices = window.speechSynthesis.getVoices();
+    const arabicVoice = pickArabicVoice();
+    const englishVoice =
+      allVoices.find((v) => v.lang.toLowerCase().startsWith('en') && /natural|google|online/i.test(v.name)) ||
+      allVoices.find((v) => v.lang.toLowerCase().startsWith('en')) ||
+      null;
+
+    if (/[\u0600-\u06FF]/.test(clean) && !arabicVoice) {
+      setTtsError(
+        isArabic
+          ? 'ما في صوت عربي مثبت على هالمتصفح. جرّب متصفح Edge أو ثبّت صوت عربي من إعدادات الويندوز.'
+          : 'No Arabic voice is installed on this browser. Try Microsoft Edge or install an Arabic voice in Windows settings.'
+      );
+    }
+
+    setPlayingTtsMessageId(messageId);
+    chunks.forEach((chunk, i) => {
+      const part = chunk.trim();
+      if (!part) return;
+      const isAr = /[\u0600-\u06FF]/.test(part);
+      const u = new SpeechSynthesisUtterance(part);
+      const v = isAr ? arabicVoice : englishVoice;
+      if (v) {
+        u.voice = v;
+        u.lang = v.lang;
+      } else {
+        u.lang = isAr ? 'ar-SA' : 'en-US';
+      }
+      u.rate = 1;
+      u.pitch = 1;
+      u.onerror = (e: any) => {
+        if (e?.error === 'interrupted' || e?.error === 'canceled') return;
+        setPlayingTtsMessageId(null);
+        setPausedTtsMessageId(null);
+      };
+      if (i === chunks.length - 1) {
+        u.onend = () => {
+          setPlayingTtsMessageId(null);
+          setPausedTtsMessageId(null);
+        };
+      }
+      window.speechSynthesis.speak(u);
+    });
   };
 
   // Send typed message
@@ -717,8 +832,8 @@ const AICallWidgetInner: React.FC<AICallWidgetProps> = ({
         body: JSON.stringify({ message: text, lang }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
+      {
+        const data = await res.json().catch(() => null);
         if (data && data.reply) {
           const agentMsg: ChatMessage = {
             id: `agent-${Date.now()}`,
@@ -764,12 +879,12 @@ const AICallWidgetInner: React.FC<AICallWidgetProps> = ({
 
   return (
     <div
-      className={`fixed z-[9999] w-[calc(100vw-1.5rem)] max-w-[360px] sm:max-w-[380px] bg-white rounded-2xl shadow-2xl border border-gray-200/90 overflow-hidden flex flex-col transition-all duration-300 animate-in fade-in slide-in-from-bottom-4 pointer-events-auto right-[12px] bottom-[calc(12px+env(safe-area-inset-bottom,0px))] sm:right-[24px] sm:bottom-[24px] ${
+      className={`fixed z-[9999] w-[calc(100vw-1.5rem)] max-w-[380px] sm:max-w-[420px] bg-white rounded-2xl shadow-2xl border border-gray-200/90 overflow-hidden flex flex-col transition-all duration-300 animate-in fade-in slide-in-from-bottom-4 pointer-events-auto right-[12px] bottom-[calc(12px+env(safe-area-inset-bottom,0px))] sm:right-[24px] sm:bottom-[24px] ${
         isArabic ? 'font-cairo' : 'font-prompt'
       }`}
       dir={isArabic ? 'rtl' : 'ltr'}
       style={{
-        maxHeight: 'min(600px, calc(100vh - 3.5rem))',
+        maxHeight: 'min(740px, calc(100vh - 3.5rem))',
       }}
     >
       {/* 1. Header with Avatar, WhatsApp-style Phone Call Button, Trash, Close */}
@@ -1014,14 +1129,14 @@ const AICallWidgetInner: React.FC<AICallWidgetProps> = ({
         )}
 
         {/* Scrollable Chat Transcript */}
-        <div className="flex-grow overflow-y-auto space-y-2 pr-1 max-h-[290px] sm:max-h-[320px] mb-2 text-xs">
+        <div className="flex-grow overflow-y-auto space-y-2 pr-1 max-h-[380px] sm:max-h-[460px] mb-2 text-xs">
           {messages.map((m) => (
             <div
               key={m.id}
               className={`flex flex-col ${m.sender === 'user' ? 'items-end' : 'items-start'}`}
             >
               <div
-                className={`max-w-[88%] rounded-2xl px-3.5 py-2 text-xs leading-relaxed shadow-xs ${
+                className={`whitespace-pre-line max-w-[88%] rounded-2xl px-3.5 py-2 text-xs leading-relaxed shadow-xs ${
                   m.sender === 'user'
                     ? 'bg-[#0b3c35] text-white rounded-br-xs font-medium'
                     : 'bg-white border border-gray-200 text-gray-800 rounded-bl-xs'
@@ -1034,39 +1149,49 @@ const AICallWidgetInner: React.FC<AICallWidgetProps> = ({
               <div className="flex items-center gap-1.5 mt-0.5 px-1">
                 <span className="text-[9px] text-gray-400">{m.time}</span>
                 {m.sender === 'agent' && (
-                  <button
-                    type="button"
-                    onClick={() => handlePlayTTS(m.id, m.text)}
-                    className={`p-1 rounded transition cursor-pointer text-xs flex items-center gap-1 ${
-                      playingTtsMessageId === m.id
-                        ? 'text-red-600 bg-red-50 font-bold'
-                        : loadingTtsMessageId === m.id
-                        ? 'text-emerald-600 bg-emerald-50'
-                        : 'text-gray-400 hover:text-emerald-700 hover:bg-gray-100'
-                    }`}
-                    title={
-                      playingTtsMessageId === m.id
-                        ? isArabic
-                          ? 'إيقاف الصوت'
-                          : 'Stop voice'
-                        : isArabic
-                        ? 'استماع للرسالة (Read aloud)'
-                        : 'Read aloud'
-                    }
-                  >
+                  <div className="flex items-center gap-0.5">
                     {loadingTtsMessageId === m.id ? (
-                      <Loader2 className="w-3 h-3 animate-spin text-emerald-600" />
+                      <span className="p-1">
+                        <Loader2 className="w-3 h-3 animate-spin text-emerald-600" />
+                      </span>
                     ) : playingTtsMessageId === m.id ? (
                       <>
-                        <Square className="w-3 h-3 fill-current text-red-600" />
-                        <span className="text-[9px] font-bold text-red-600">
-                          {isArabic ? 'إيقاف' : 'Stop'}
-                        </span>
+                        <button
+                          type="button"
+                          onClick={handlePauseResumeTTS}
+                          className="p-2 rounded-lg text-emerald-700 bg-emerald-50 hover:bg-emerald-100 cursor-pointer"
+                          title={
+                            pausedTtsMessageId === m.id
+                              ? isArabic ? 'متابعة' : 'Resume'
+                              : isArabic ? 'إيقاف مؤقت' : 'Pause'
+                          }
+                        >
+                          {pausedTtsMessageId === m.id ? (
+                            <Play className="w-3 h-3 fill-current" />
+                          ) : (
+                            <Pause className="w-3 h-3 fill-current" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleStopTTS}
+                          className="p-2 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 cursor-pointer"
+                          title={isArabic ? 'إيقاف' : 'Stop'}
+                        >
+                          <Square className="w-3 h-3 fill-current" />
+                        </button>
                       </>
                     ) : (
-                      <Volume2 className="w-3 h-3" />
+                      <button
+                        type="button"
+                        onClick={() => handleBrowserTTS(m.id, m.text)}
+                        className="p-2 rounded-lg text-gray-400 hover:text-emerald-700 hover:bg-gray-100 cursor-pointer"
+                        title={isArabic ? 'استماع للرسالة' : 'Read aloud'}
+                      >
+                        <Volume2 className="w-4 h-4" /><span className="text-[10px] font-semibold ms-1">{isArabic ? 'استماع' : 'Listen'}</span>
+                      </button>
                     )}
-                  </button>
+                  </div>
                 )}
               </div>
             </div>
