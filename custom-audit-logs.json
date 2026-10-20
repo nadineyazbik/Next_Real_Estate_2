@@ -1,0 +1,36 @@
+[
+  {
+    "id": "audit-1792396890348-214",
+    "timestamp": "2026-10-19T08:01:30.348Z",
+    "actor": "admin",
+    "action": "approve_submission",
+    "targetId": "REQ-2026-3716",
+    "details": "Approved submission REQ-2026-3716 and created live property custom-1792396890347",
+    "ip": "127.0.0.1"
+  },
+  {
+    "id": "audit-1792396890306-951",
+    "timestamp": "2026-10-19T08:01:30.306Z",
+    "actor": "admin@nextrealestate.com",
+    "action": "ADMIN_LOGIN",
+    "details": "Successful administrative login",
+    "ip": "127.0.0.1"
+  },
+  {
+    "id": "audit-1792396886148-109",
+    "timestamp": "2026-10-19T08:01:26.148Z",
+    "actor": "admin@nextrealestate.com",
+    "action": "ADMIN_LOGIN",
+    "details": "Successful administrative login",
+    "ip": "127.0.0.1"
+  },
+  {
+    "id": "audit-1792396876760-332",
+    "timestamp": "2026-10-19T08:01:16.760Z",
+    "actor": "visitor (Karim Haddad)",
+    "action": "submit_property",
+    "targetId": "REQ-2026-3716",
+    "details": "Submitted property listing request for \"Luxury Penthouse in Achrafieh\" ($350000)",
+    "ip": "127.0.0.1"
+  }
+]
